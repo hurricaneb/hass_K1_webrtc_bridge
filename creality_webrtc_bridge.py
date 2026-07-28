@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+import re
 import sys
 import time
 from typing import Optional, Set
@@ -67,6 +68,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("creality_webrtc")
 
+def sanitize_sdp(sdp: str) -> str:
+    """Sanerar SDP-svaret från skrivaren så att aiortc godkänner H264 profile-level-id."""
+    # Ersätt alla profile-level-id med 42e01f (Constrained Baseline) som aiortc garanterat stödjer
+    sanitized = re.sub(r'profile-level-id=[0-9a-fA-F]{6}', 'profile-level-id=42e01f', sdp)
+    return sanitized
+
 class CameraBridge:
     def __init__(self, cfg: dict):
         self.printer_ip = cfg["printer_ip"]
@@ -96,7 +103,7 @@ class CameraBridge:
                 @self.pc.on("track")
                 def on_track(track):
                     if track.kind == "video":
-                        logger.info("Mottog videotrack från skrivaren! Börjar avkoda...")
+                        logger.info("Mottog videotrack från skrivaren! Börjar avkoda videoström...")
                         track_received.set()
                         asyncio.create_task(self._process_video_track(track))
 
@@ -125,7 +132,14 @@ class CameraBridge:
                         if resp.status == 200:
                             raw_answer = await resp.text()
                             decoded_json = json.loads(base64.b64decode(raw_answer).decode("utf-8"))
-                            answer = RTCSessionDescription(sdp=decoded_json["sdp"], type=decoded_json["type"])
+                            
+                            original_sdp = decoded_json["sdp"]
+                            logger.debug("Mottog SDP Answer från skrivaren:\n%s", original_sdp)
+
+                            # Sanera SDP för kompabilitet med aiortc
+                            sanitized_sdp = sanitize_sdp(original_sdp)
+
+                            answer = RTCSessionDescription(sdp=sanitized_sdp, type=decoded_json["type"])
                             await self.pc.setRemoteDescription(answer)
                             logger.info("WebRTC-handskakning genomförd med skrivaren!")
                             self.connected = True
