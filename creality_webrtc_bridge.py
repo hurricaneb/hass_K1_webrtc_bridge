@@ -45,24 +45,25 @@ def load_config() -> dict:
                 print(f"[INIT] Laddade konfiguration från {HA_OPTIONS_PATH}: {user_options}", flush=True)
         except Exception as err:
             print(f"[WARN] Kunde inte läsa {HA_OPTIONS_PATH} ({err}). Använder standardvärden.", flush=True)
-    else:
-        # Check environment variables
-        if os.environ.get("PRINTER_IP"):
-            config["printer_ip"] = os.environ.get("PRINTER_IP")
-        if os.environ.get("PRINTER_PORT"):
-            config["printer_port"] = int(os.environ.get("PRINTER_PORT"))
-        if os.environ.get("STREAM_PORT"):
-            config["stream_port"] = int(os.environ.get("STREAM_PORT"))
-        if os.environ.get("TARGET_FPS"):
-            config["target_fps"] = int(os.environ.get("TARGET_FPS"))
-        if os.environ.get("JPEG_QUALITY"):
-            config["jpeg_quality"] = int(os.environ.get("JPEG_QUALITY"))
-        if os.environ.get("LOG_LEVEL"):
-            config["log_level"] = os.environ.get("LOG_LEVEL")
+
+    # Environment variables or CLI args overrides (highest priority)
+    if os.environ.get("PRINTER_IP"):
+        config["printer_ip"] = os.environ.get("PRINTER_IP")
+    if os.environ.get("PRINTER_PORT"):
+        config["printer_port"] = int(os.environ.get("PRINTER_PORT"))
+    if os.environ.get("STREAM_PORT"):
+        config["stream_port"] = int(os.environ.get("STREAM_PORT"))
+    if os.environ.get("TARGET_FPS"):
+        config["target_fps"] = int(os.environ.get("TARGET_FPS"))
+    if os.environ.get("JPEG_QUALITY"):
+        config["jpeg_quality"] = int(os.environ.get("JPEG_QUALITY"))
+    if os.environ.get("LOG_LEVEL"):
+        config["log_level"] = os.environ.get("LOG_LEVEL")
+
+    if len(sys.argv) > 1:
+        config["stream_port"] = int(sys.argv[1])
 
     return config
-
-config = load_config()
 
 log_level_map = {
     "trace": logging.DEBUG,
@@ -71,36 +72,11 @@ log_level_map = {
     "warning": logging.WARNING,
     "error": logging.ERROR,
 }
-logging.basicConfig(
-    level=log_level_map.get(config.get("log_level", "info").lower(), logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    stream=sys.stdout,
-    force=True,
-)
+
 logger = logging.getLogger("creality_webrtc")
 
-def prepare_offer_sdp(sdp: str) -> str:
-    """Lägger till Payload Type 96 och sätter a=setup:passive i offer SDP så skrivaren agerar DTLS active."""
-    lines = sdp.splitlines()
-    new_lines = []
-    for line in lines:
-        if line.startswith("a=setup:actpass"):
-            new_lines.append("a=setup:passive")
-            continue
-        if line.startswith("m=video"):
-            parts = line.split(" ")
-            new_lines.append(" ".join(parts[:3] + ["96"] + parts[3:]))
-            new_lines.append("a=rtpmap:96 H264/90000")
-            new_lines.append("a=rtcp-fb:96 nack")
-            new_lines.append("a=rtcp-fb:96 nack pli")
-            new_lines.append("a=rtcp-fb:96 goog-remb")
-            new_lines.append("a=fmtp:96 level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f")
-            continue
-        new_lines.append(line)
-    return "\r\n".join(new_lines) + "\r\n"
-
 def sanitize_sdp(sdp: str) -> str:
-    """Sanerar SDP-svaret från skrivaren: slår ihop dubblerade a=fmtp-rader och sätter a=setup:active vid behov."""
+    """Sanerar SDP-svaret från skrivaren: slår ihop dubblerade a=fmtp-rader och ser till att H264-kodernas parametrar är kompletta."""
     logger.info("--- URSPRUNGLIG SDP ANSWER FRÅN SKRIVAREN ---\n%s", sdp)
     lines = sdp.splitlines()
 
@@ -108,10 +84,6 @@ def sanitize_sdp(sdp: str) -> str:
     other_lines = []
 
     for line in lines:
-        if line.strip() == "a=setup:passive":
-            other_lines.append("a=setup:active")
-            continue
-
         m = re.match(r'^a=fmtp:(\d+)\s+(.*)', line)
         if m:
             pt = m.group(1)
@@ -217,8 +189,7 @@ class CameraBridge:
                     except asyncio.TimeoutError:
                         logger.info("ICE gathering avslutades efter timeout, fortsätter...")
 
-                # Förbered erbjudandet med stöd för PT 96 och passive DTLS
-                offer_sdp = prepare_offer_sdp(self.pc.localDescription.sdp)
+                offer_sdp = self.pc.localDescription.sdp
                 logger.info("Lokal SDP Offer som skickas till skrivaren:\n%s", offer_sdp)
 
                 # 2. Paketera i JSON & Base64-koda
@@ -281,9 +252,8 @@ class CameraBridge:
         """Avkodar videoframes från WebRTC-spåret och konverterar till JPEG."""
         logger.info("Väntar på första bildrutan (Keyframe/IDR) från skrivarkameran...")
         
-        # Skicka RTCP PLI (RtcpPsfbPacket med fmt=1) med await då _send_rtcp är en korrutin
+        # Skicka RTCP PLI periodiskt för att hålla begäran om nyckelbildruta aktiv
         async def request_keyframe_loop():
-            logger.info("Startar RTCP PLI begäran om nyckelbildruta (Keyframe)...")
             while self.connected and self.received_frames_count == 0:
                 try:
                     if self.pc and RtcpPsfbPacket is not None:
@@ -305,10 +275,10 @@ class CameraBridge:
                 frame = await track.recv()
                 self.received_frames_count += 1
                 if self.received_frames_count == 1:
-                    logger.info("Mottog FÖRSTA bildrutan från skrivarkameran! (Upplösning: %sx%s)", frame.width, frame.height)
+                    logger.info("🎉 Mottog FÖRSTA bildrutan från skrivarkameran! (Upplösning: %sx%s)", frame.width, frame.height)
                     keyframe_task.cancel()
                 elif self.received_frames_count % 100 == 0:
-                    logger.debug("Tagit emot %s bildrutor hittills.", self.received_frames_count)
+                    logger.info("Tagit emot %s bildrutor hittills.", self.received_frames_count)
 
                 now = time.time()
                 if self.fps_interval > 0 and (now - self.last_frame_time) < self.fps_interval:
@@ -391,6 +361,12 @@ class CameraBridge:
 
 async def start_app():
     cfg = load_config()
+    logging.basicConfig(
+        level=log_level_map.get(cfg.get("log_level", "info").lower(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        stream=sys.stdout,
+        force=True,
+    )
     logger.info("Startar Creality K1 WebRTC Camera Bridge med konfiguration:")
     logger.info("  Skrivar-IP: %s", cfg["printer_ip"])
     logger.info("  Skrivarport: %s", cfg["printer_port"])
