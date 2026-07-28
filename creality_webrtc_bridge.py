@@ -11,6 +11,8 @@ from typing import Optional, Set
 import aiohttp
 from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
+from aiortc.rtcdtlstransport import RTCDtlsTransport
+
 try:
     from aiortc.rtp import RtcpPsfbPacket
 except ImportError:
@@ -21,6 +23,33 @@ from PIL import Image
 # Force unbuffered stdout logging
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
+
+# Monkey-patch RTCDtlsTransport so unencrypted RTP packets from Creality printer are passed directly to PyAV decoder
+_original_recv_next = RTCDtlsTransport._recv_next
+
+async def _patched_recv_next(self):
+    while True:
+        try:
+            data = await self.transport._recv()
+        except Exception:
+            return await _original_recv_next(self)
+
+        first_byte = data[0]
+        if first_byte > 127 and first_byte < 192:
+            # Raw RTP video packet! Force state connected so RTCP keyframe requests work
+            if self.state != "connected":
+                self._set_state("connected")
+            if self._rx_srtp:
+                try:
+                    return self._rx_srtp.unprotect(data)
+                except Exception:
+                    return data
+            return data
+        elif 20 <= first_byte <= 64:
+            # Standard DTLS packet
+            return await _original_recv_next(self)
+
+RTCDtlsTransport._recv_next = _patched_recv_next
 
 # Config file location when running as a Home Assistant Add-on
 HA_OPTIONS_PATH = "/data/options.json"
@@ -278,7 +307,6 @@ class CameraBridge:
                         for transceiver in self.pc.getTransceivers():
                             if transceiver.receiver and hasattr(transceiver.receiver, "_send_rtcp"):
                                 ssrc = getattr(transceiver.receiver, "_ssrc", 0) or 0
-                                # Skrivarens SDP specificerade a=ssrc:1 cname:pear
                                 media_ssrc = getattr(transceiver.receiver, "_track_ssrc", None) or 1
                                 pli = RtcpPsfbPacket(fmt=1, ssrc=ssrc, media_ssrc=media_ssrc)
                                 logger.debug("Skickar RTCP PLI (fmt=1, ssrc=%s, media_ssrc=%s)...", ssrc, media_ssrc)
