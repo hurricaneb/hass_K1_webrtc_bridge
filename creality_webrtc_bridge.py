@@ -88,9 +88,16 @@ def prepare_offer_sdp(sdp: str) -> str:
     return "\r\n".join(new_lines) + "\r\n"
 
 def sanitize_sdp(sdp: str) -> str:
-    """Sanerar SDP-svaret från skrivaren: slår ihop dubblerade a=fmtp-rader och ser till att H264-kodernas parametrar är kompletta."""
+    """Sanerar SDP-svaret från skrivaren: rättar till skräp-Payload Types (>127) från skrivarens C++ daemon och slår ihop a=fmtp."""
     logger.info("--- URSPRUNGLIG SDP ANSWER FRÅN SKRIVAREN ---\n%s", sdp)
-    lines = sdp.splitlines()
+
+    # Ersätt alla felaktiga Payload Types > 127 (t.ex. 1987053984) som genereras av buggar i skrivarens C++ daemon med 101
+    def clean_pt(text: str) -> str:
+        # Ersätt gigantiska tal (>127) med 101
+        return re.sub(r'\b([2-9]\d{2,}|\d{4,})\b', '101', text)
+
+    sdp_clean = clean_pt(sdp)
+    lines = sdp_clean.splitlines()
 
     fmtp_params = {}
     other_lines = []
@@ -190,7 +197,7 @@ class CameraBridge:
 
                 # Vänta på att ICE-gathering slutförs så alla lokala kandidater (IPs) inkluderas i offer
                 if self.pc.iceGatheringState != "complete":
-                    logger.info("Väntar på että lokala ICE-kandidater samlas in...")
+                    logger.info("Väntar på att lokala ICE-kandidater samlas in...")
                     gather_evt = asyncio.Event()
                     @self.pc.on("icegatheringstatechange")
                     def on_ice_state():
@@ -228,7 +235,7 @@ class CameraBridge:
                             
                             original_sdp = decoded_json["sdp"]
 
-                            # Sanera SDP för kompabilitet med aiortc
+                            # Sanera SDP för kompabilitet med aiortc (inklusive städning av korrupta PTs > 127)
                             sanitized_sdp = sanitize_sdp(original_sdp)
 
                             answer = RTCSessionDescription(sdp=sanitized_sdp, type=decoded_json["type"])
