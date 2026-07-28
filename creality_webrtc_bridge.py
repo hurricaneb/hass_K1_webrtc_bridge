@@ -57,7 +57,6 @@ def create_placeholder_frame(status_text: str = "Creality K1 Max WebRTC Bridge -
     """Skapar en mörk JPEG-bild med statustext så Home Assistant sätter kameran som Aktiv."""
     img = Image.new("RGB", (640, 360), color=(20, 24, 33))
     draw = ImageDraw.Draw(img)
-    # Rita en enkel indikator-cirkel och text
     draw.ellipse((40, 165, 70, 195), fill=(0, 200, 100))
     draw.text((85, 172), status_text, fill=(240, 240, 240))
     buf = io.BytesIO()
@@ -88,7 +87,6 @@ def load_config() -> dict:
         except Exception as err:
             print(f"[WARN] Kunde inte läsa {HA_OPTIONS_PATH} ({err}). Använder standardvärden.", flush=True)
 
-    # Environment variables or CLI args overrides (highest priority)
     if os.environ.get("PRINTER_IP"):
         config["printer_ip"] = os.environ.get("PRINTER_IP")
     if os.environ.get("PRINTER_PORT"):
@@ -118,16 +116,25 @@ log_level_map = {
 logger = logging.getLogger("creality_webrtc")
 
 def prepare_offer_sdp(sdp: str) -> str:
-    """Filtrerar bort interna Docker-IPs (172.x) från offer SDP så skrivaren endast skickar WebRTC-paket till LAN-IP."""
+    """Filtrerar bort Docker-IPs och lägger till Payload Type 96 i offer SDP för H264-kodaren."""
     lines = sdp.splitlines()
     new_lines = []
     for line in lines:
         if line.startswith("a=candidate:"):
-            # Exkludera interna Docker subnät (172.17.*, 172.18.*, 172.19.*, 172.30.*) och IPv6 ULA-adresser
             if " 172.17." in line or " 172.18." in line or " 172.19." in line or " 172.30." in line or " fd" in line:
                 continue
+        elif line.startswith("m=video"):
+            parts = line.split(" ")
+            pt_list = parts[3:]
+            if "96" not in pt_list:
+                pt_list.insert(0, "96")
+            line = " ".join(parts[:3] + pt_list)
         new_lines.append(line)
-    return "\r\n".join(new_lines) + "\r\n"
+
+    sdp_out = "\r\n".join(new_lines) + "\r\n"
+    if "a=rtpmap:96" not in sdp_out:
+        sdp_out += "a=rtpmap:96 H264/90000\r\na=fmtp:96 profile-level-id=42e01f;packetization-mode=0\r\n"
+    return sdp_out
 
 def sanitize_sdp(sdp: str) -> str:
     """Sanerar SDP-svaret från skrivaren: slår ihop dubblerade a=fmtp-rader och ser till att H264-kodernas parametrar är kompletta."""
@@ -170,7 +177,6 @@ def sanitize_sdp(sdp: str) -> str:
                     else:
                         combined += ";packetization-mode=1"
 
-                # Rensa dubbla semikoloner om några uppstod
                 combined = re.sub(r';+', ';', combined).strip(';')
                 new_lines.append(f"a=fmtp:{pt} {combined}")
 
@@ -259,7 +265,7 @@ class CameraBridge:
                     except asyncio.TimeoutError:
                         logger.info("ICE gathering avslutades efter timeout, fortsätter...")
 
-                # Filtrera bort Docker-interna subnät från offer SDP
+                # Filtrera bort Docker-interna subnät från offer SDP och inkludera Payload Type 96
                 offer_sdp = prepare_offer_sdp(self.pc.localDescription.sdp)
                 logger.info("Lokal SDP Offer som skickas till skrivaren:\n%s", offer_sdp)
 
