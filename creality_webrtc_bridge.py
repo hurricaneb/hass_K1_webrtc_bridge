@@ -75,19 +75,26 @@ logging.basicConfig(
 logger = logging.getLogger("creality_webrtc")
 
 def sanitize_sdp(sdp: str) -> str:
-    """Sanerar SDP-svaret från skrivaren: justerar profile-level-id vid behov."""
+    """Sanerar SDP-svaret från skrivaren: matchar payload types exakt med aiortcs offer."""
     logger.info("--- URSPRUNGLIG SDP ANSWER FRÅN SKRIVAREN ---\n%s", sdp)
     lines = sdp.splitlines()
     new_lines = []
 
     for line in lines:
-        # Ersätt endast profile-level-id om det skulle vara något annat än 42e01f
-        m = re.match(r'^a=fmtp:(\d+)\s+(.*)', line)
-        if m:
-            pt = m.group(1)
-            params = m.group(2)
-            new_params = re.sub(r'profile-level-id=[0-9a-fA-F]{6}', 'profile-level-id=42e01f', params)
-            new_lines.append(f"a=fmtp:{pt} {new_params}")
+        # aiortc erbjöd H264 på payload type 101. Tvinga m=video att endast använda 101.
+        if line.startswith("m=video"):
+            parts = line.split(" ")
+            new_line = " ".join(parts[:3] + ["101"])
+            new_lines.append(new_line)
+            continue
+
+        # Ta bort PT 96 rader då PT 96 inte fanns i aiortcs offer
+        if "rtpmap:96" in line or "fmtp:96" in line:
+            continue
+
+        # Säkerställ att fmtp:101 har alla godkända parametrar för aiortc
+        if line.startswith("a=fmtp:101"):
+            new_lines.append("a=fmtp:101 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f")
             continue
 
         new_lines.append(line)
