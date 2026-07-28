@@ -281,7 +281,7 @@ class CameraBridge:
         """Avkodar videoframes från WebRTC-spåret och konverterar till JPEG."""
         logger.info("Väntar på första bildrutan (Keyframe/IDR) från skrivarkameran...")
         
-        # Skicka RTCP PLI (RtcpPsfbPacket med fmt=1) säkert med try-except
+        # Skicka RTCP PLI (RtcpPsfbPacket med fmt=1) med await då _send_rtcp är en korrutin
         async def request_keyframe_loop():
             logger.info("Startar RTCP PLI begäran om nyckelbildruta (Keyframe)...")
             while self.connected and self.received_frames_count == 0:
@@ -293,7 +293,7 @@ class CameraBridge:
                                 media_ssrc = getattr(transceiver.receiver, "_track_ssrc", 1)
                                 pli = RtcpPsfbPacket(fmt=1, ssrc=ssrc, media_ssrc=media_ssrc)
                                 logger.debug("Skickar RTCP PLI (fmt=1, ssrc=%s, media_ssrc=%s)...", ssrc, media_ssrc)
-                                transceiver.receiver._send_rtcp(pli)
+                                await transceiver.receiver._send_rtcp(pli)
                 except Exception as err:
                     logger.warning("Kunde inte skicka RTCP PLI: %s", err)
                 await asyncio.sleep(1.0)
