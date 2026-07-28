@@ -270,15 +270,16 @@ class CameraBridge:
         """Avkodar videoframes från WebRTC-spåret och konverterar till JPEG."""
         logger.info("Väntar på första bildrutan (Keyframe/IDR) från skrivarkameran...")
         
-        # Skicka RTCP PLI periodiskt för att hålla begäran om nyckelbildruta aktiv
+        # Skicka RTCP PLI periodiskt med media_ssrc=1 för skrivarens videospår
         async def request_keyframe_loop():
             while self.connected and self.received_frames_count == 0:
                 try:
                     if self.pc and RtcpPsfbPacket is not None:
                         for transceiver in self.pc.getTransceivers():
                             if transceiver.receiver and hasattr(transceiver.receiver, "_send_rtcp"):
-                                ssrc = getattr(transceiver.receiver, "_ssrc", 0)
-                                media_ssrc = getattr(transceiver.receiver, "_track_ssrc", 1)
+                                ssrc = getattr(transceiver.receiver, "_ssrc", 0) or 0
+                                # Skrivarens SDP specificerade a=ssrc:1 cname:pear
+                                media_ssrc = getattr(transceiver.receiver, "_track_ssrc", None) or 1
                                 pli = RtcpPsfbPacket(fmt=1, ssrc=ssrc, media_ssrc=media_ssrc)
                                 logger.debug("Skickar RTCP PLI (fmt=1, ssrc=%s, media_ssrc=%s)...", ssrc, media_ssrc)
                                 await transceiver.receiver._send_rtcp(pli)
