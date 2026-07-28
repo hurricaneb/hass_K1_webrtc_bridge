@@ -30,8 +30,5 @@ RUN apk del build-base python3-dev pkgconfig ffmpeg-dev libffi-dev openssl-dev j
 
 # Copy application files
 COPY creality_webrtc_bridge.py /app/
-COPY run.sh /app/
 
-RUN chmod +x /app/run.sh
-
-CMD [ "/app/run.sh" ]
+CMD [ "python3", "-u", "/app/creality_webrtc_bridge.py" ]
