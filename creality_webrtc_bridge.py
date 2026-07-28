@@ -168,12 +168,15 @@ class CameraBridge:
                     except asyncio.TimeoutError:
                         logger.info("ICE gathering avslutades efter timeout, fortsätter...")
 
-                logger.info("Lokal SDP Offer som skickas till skrivaren:\n%s", self.pc.localDescription.sdp)
+                offer_sdp = self.pc.localDescription.sdp
+                # Sätt a=setup:passive i erbjudandet för att tvinga skrivaren att agera DTLS active
+                offer_sdp_passive = offer_sdp.replace("a=setup:actpass", "a=setup:passive")
+                logger.info("Lokal SDP Offer som skickas till skrivaren:\n%s", offer_sdp_passive)
 
                 # 2. Paketera i JSON & Base64-koda
                 payload_json = {
                     "type": "offer",
-                    "sdp": self.pc.localDescription.sdp
+                    "sdp": offer_sdp_passive
                 }
                 b64_payload = base64.b64encode(json.dumps(payload_json).encode("utf-8")).decode("utf-8")
 
