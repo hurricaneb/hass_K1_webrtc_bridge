@@ -47,7 +47,7 @@ async def _patched_recv_next(self):
             except Exception:
                 return data
         return data
-    
+
     # Send all other packets (STUN, DTLS, etc.) to standard aiortc handler
     return await _original_recv_next(self)
 
@@ -116,7 +116,7 @@ log_level_map = {
 logger = logging.getLogger("creality_webrtc")
 
 def prepare_offer_sdp(sdp: str) -> str:
-    """Filtrerar bort Docker-IPs och lägger till Payload Type 96 i offer SDP för H264-kodaren."""
+    """Filtrerar bort Docker-IPs och lägger till Payload Type 96 i offer SDP för H264-kodern."""
     lines = sdp.splitlines()
     new_lines = []
     for line in lines:
@@ -133,7 +133,7 @@ def prepare_offer_sdp(sdp: str) -> str:
 
     sdp_out = "\r\n".join(new_lines) + "\r\n"
     if "a=rtpmap:96" not in sdp_out:
-        sdp_out += "a=rtpmap:96 H264/90000\r\na=fmtp:96 profile-level-id=42e01f;packetization-mode=0\r\n"
+        sdp_out += "a=rtpmap:96 H264/90000\r\na=fmtp:96 profile-level-id=42e01f;packetization-mode=1\r\n"
     return sdp_out
 
 def sanitize_sdp(sdp: str) -> str:
@@ -172,10 +172,9 @@ def sanitize_sdp(sdp: str) -> str:
                     combined = re.sub(r'profile-level-id=[0-9a-fA-F]{6}', 'profile-level-id=42e01f', combined)
 
                 if "packetization-mode" not in combined:
-                    if pt == "96":
-                        combined += ";packetization-mode=0"
-                    else:
-                        combined += ";packetization-mode=1"
+                    combined += ";packetization-mode=1"
+                else:
+                    combined = re.sub(r'packetization-mode=\d', 'packetization-mode=1', combined)
 
                 combined = re.sub(r';+', ';', combined).strip(';')
                 new_lines.append(f"a=fmtp:{pt} {combined}")
@@ -334,21 +333,21 @@ class CameraBridge:
         """Avkodar videoframes från WebRTC-spåret och konverterar till JPEG."""
         logger.info("Väntar på första bildrutan (Keyframe/IDR) från skrivarkameran...")
         
-        # Skicka RTCP PLI periodiskt med media_ssrc=1 för skrivarens videospår
+        # Skicka RTCP PLI periodiskt med ssrc=1 & ssrc=0 för skrivarens videospår
         async def request_keyframe_loop():
             while self.connected and self.received_frames_count == 0:
                 try:
                     if self.pc and RtcpPsfbPacket is not None:
                         for transceiver in self.pc.getTransceivers():
                             if transceiver.receiver and hasattr(transceiver.receiver, "_send_rtcp"):
-                                ssrc = getattr(transceiver.receiver, "_ssrc", 0) or 0
-                                media_ssrc = getattr(transceiver.receiver, "_track_ssrc", None) or 1
-                                pli = RtcpPsfbPacket(fmt=1, ssrc=ssrc, media_ssrc=media_ssrc)
-                                logger.debug("Skickar RTCP PLI (fmt=1, ssrc=%s, media_ssrc=%s)...", ssrc, media_ssrc)
-                                await transceiver.receiver._send_rtcp(pli)
+                                pli1 = RtcpPsfbPacket(fmt=1, ssrc=1, media_ssrc=1)
+                                pli0 = RtcpPsfbPacket(fmt=1, ssrc=0, media_ssrc=1)
+                                logger.debug("Skickar RTCP PLI (ssrc=1 & ssrc=0, media_ssrc=1)...")
+                                await transceiver.receiver._send_rtcp(pli1)
+                                await transceiver.receiver._send_rtcp(pli0)
                 except Exception as err:
                     logger.warning("Kunde inte skicka RTCP PLI: %s", err)
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.5)
 
         keyframe_task = asyncio.create_task(request_keyframe_loop())
 
