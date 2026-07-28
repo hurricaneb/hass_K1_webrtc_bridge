@@ -11,7 +11,11 @@ from typing import Optional, Set
 import aiohttp
 from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
-from aiortc.rtp import RtcpPliPacket
+try:
+    from aiortc.rtp import RtcpPsfbPacket
+except ImportError:
+    RtcpPsfbPacket = None
+
 from PIL import Image
 
 # Force unbuffered stdout logging
@@ -277,18 +281,18 @@ class CameraBridge:
         """Avkodar videoframes från WebRTC-spåret och konverterar till JPEG."""
         logger.info("Väntar på första bildrutan (Keyframe/IDR) från skrivarkameran...")
         
-        # Skicka RTCP PLI (RtcpPliPacket) synkront med skapade paketparametrar
+        # Skicka RTCP PLI (RtcpPsfbPacket med fmt=1) säkert med try-except
         async def request_keyframe_loop():
             logger.info("Startar RTCP PLI begäran om nyckelbildruta (Keyframe)...")
             while self.connected and self.received_frames_count == 0:
                 try:
-                    if self.pc:
+                    if self.pc and RtcpPsfbPacket is not None:
                         for transceiver in self.pc.getTransceivers():
                             if transceiver.receiver and hasattr(transceiver.receiver, "_send_rtcp"):
                                 ssrc = getattr(transceiver.receiver, "_ssrc", 0)
                                 media_ssrc = getattr(transceiver.receiver, "_track_ssrc", 1)
-                                pli = RtcpPliPacket(ssrc=ssrc, media_ssrc=media_ssrc)
-                                logger.debug("Skickar RTCP PLI paket till skrivaren...")
+                                pli = RtcpPsfbPacket(fmt=1, ssrc=ssrc, media_ssrc=media_ssrc)
+                                logger.debug("Skickar RTCP PLI (fmt=1, ssrc=%s, media_ssrc=%s)...", ssrc, media_ssrc)
                                 transceiver.receiver._send_rtcp(pli)
                 except Exception as err:
                     logger.warning("Kunde inte skicka RTCP PLI: %s", err)
