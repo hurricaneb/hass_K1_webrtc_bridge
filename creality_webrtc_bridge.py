@@ -28,26 +28,28 @@ if hasattr(sys.stdout, "reconfigure"):
 _original_recv_next = RTCDtlsTransport._recv_next
 
 async def _patched_recv_next(self):
-    while True:
-        try:
-            data = await self.transport._recv()
-        except Exception:
-            return await _original_recv_next(self)
+    try:
+        data = await self.transport._recv()
+    except Exception:
+        return await _original_recv_next(self)
 
-        first_byte = data[0]
-        if first_byte > 127 and first_byte < 192:
-            # Raw RTP video packet! Force state connected so RTCP keyframe requests work
-            if self.state != "connected":
-                self._set_state("connected")
-            if self._rx_srtp:
-                try:
-                    return self._rx_srtp.unprotect(data)
-                except Exception:
-                    return data
-            return data
-        elif 20 <= first_byte <= 64:
-            # Standard DTLS packet
-            return await _original_recv_next(self)
+    if not data:
+        return await _original_recv_next(self)
+
+    first_byte = data[0]
+    if first_byte > 127 and first_byte < 192:
+        # Raw RTP video packet! Force state connected so RTCP keyframe requests work
+        if self.state != "connected":
+            self._set_state("connected")
+        if self._rx_srtp:
+            try:
+                return self._rx_srtp.unprotect(data)
+            except Exception:
+                return data
+        return data
+    
+    # Send all other packets (STUN, DTLS, etc.) to standard aiortc handler
+    return await _original_recv_next(self)
 
 RTCDtlsTransport._recv_next = _patched_recv_next
 
