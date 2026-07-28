@@ -75,18 +75,13 @@ logging.basicConfig(
 logger = logging.getLogger("creality_webrtc")
 
 def sanitize_sdp(sdp: str) -> str:
-    """Sanerar SDP-svaret från skrivaren: behåller ursprungligt packetization-mode för PT 96/101 och justerar setup."""
+    """Sanerar SDP-svaret från skrivaren: justerar profile-level-id vid behov."""
     logger.info("--- URSPRUNGLIG SDP ANSWER FRÅN SKRIVAREN ---\n%s", sdp)
     lines = sdp.splitlines()
     new_lines = []
 
     for line in lines:
-        # Om skrivaren svarar med a=setup:passive, tvinga a=setup:active i svaret så att DTLS genomförs utan timeout
-        if line.strip() == "a=setup:passive":
-            new_lines.append("a=setup:active")
-            continue
-
-        # Ändra INTE packetization-mode! Ersätt endast profile-level-id om det är något annat än 42e01f
+        # Ersätt endast profile-level-id om det skulle vara något annat än 42e01f
         m = re.match(r'^a=fmtp:(\d+)\s+(.*)', line)
         if m:
             pt = m.group(1)
@@ -153,7 +148,7 @@ class CameraBridge:
                 offer = await self.pc.createOffer()
                 await self.pc.setLocalDescription(offer)
 
-                # Vänta på att ICE-gathering slutförs så alla lokala kandidater (IPs) inkluderas i offer!
+                # Vänta på att ICE-gathering slutförs så alla lokala kandidater (IPs) inkluderas i offer
                 if self.pc.iceGatheringState != "complete":
                     logger.info("Väntar på att lokala ICE-kandidater samlas in...")
                     gather_evt = asyncio.Event()
@@ -166,15 +161,12 @@ class CameraBridge:
                     except asyncio.TimeoutError:
                         logger.info("ICE gathering avslutades efter timeout, fortsätter...")
 
-                offer_sdp = self.pc.localDescription.sdp
-                # Anpassa a=setup i offer till active för att tvinga DTLS-handskakningen att genomföras utan timeout
-                offer_sdp_active = offer_sdp.replace("a=setup:actpass", "a=setup:active")
-                logger.info("Lokal SDP Offer som skickas till skrivaren:\n%s", offer_sdp_active)
+                logger.info("Lokal SDP Offer som skickas till skrivaren:\n%s", self.pc.localDescription.sdp)
 
                 # 2. Paketera i JSON & Base64-koda
                 payload_json = {
                     "type": "offer",
-                    "sdp": offer_sdp_active
+                    "sdp": self.pc.localDescription.sdp
                 }
                 b64_payload = base64.b64encode(json.dumps(payload_json).encode("utf-8")).decode("utf-8")
 
@@ -229,13 +221,15 @@ class CameraBridge:
 
     async def _process_video_track(self, track):
         """Avkodar videoframes från WebRTC-spåret och konverterar till JPEG."""
-        logger.info("Börjar ta emot bildrutor från videospåret...")
+        logger.info("Väntar på första bildrutan (Keyframe/IDR) från skrivarkameran...")
         while self.connected:
             try:
                 frame = await track.recv()
                 self.received_frames_count += 1
                 if self.received_frames_count == 1:
                     logger.info("Mottog FÖRSTA bildrutan från skrivarkameran! (Upplösning: %sx%s)", frame.width, frame.height)
+                elif self.received_frames_count % 100 == 0:
+                    logger.debug("Tagit emot %s bildrutor hittills.", self.received_frames_count)
 
                 now = time.time()
                 if self.fps_interval > 0 and (now - self.last_frame_time) < self.fps_interval:
