@@ -24,7 +24,7 @@ from PIL import Image
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
 
-# Monkey-patch RTCDtlsTransport so unencrypted RTP packets from Creality printer are passed directly to PyAV decoder
+# Patch RTCDtlsTransport so unencrypted RTP packets from Creality printer are passed directly to PyAV decoder
 _original_recv_next = RTCDtlsTransport._recv_next
 
 async def _patched_recv_next(self):
@@ -165,6 +165,18 @@ def sanitize_sdp(sdp: str) -> str:
     logger.info("--- SANERAD SDP ANSWER FÖR AIORTC ---\n%s", sanitized)
     return sanitized
 
+async def trigger_camera_via_ws(printer_ip: str):
+    """Skickar video_start till skrivarens kontroll-WebSocket på port 9999 så videokodaren startas."""
+    ws_url = f"ws://{printer_ip}:9999/"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(ws_url, timeout=3.0) as ws:
+                logger.info("Skickar video_start till skrivarens kontroll-WebSocket på port 9999...")
+                await ws.send_str(json.dumps({"cmd": "video_start"}))
+                await asyncio.sleep(0.5)
+    except Exception as err:
+        logger.debug("WebSocket-anrop på port 9999: %s", err)
+
 class CameraBridge:
     def __init__(self, cfg: dict):
         self.printer_ip = cfg["printer_ip"]
@@ -186,6 +198,9 @@ class CameraBridge:
         """Initierar WebRTC handskakning med skrivaren och hanterar mottagna bildrutor."""
         while True:
             try:
+                # Trigga videokodaren via WebSocket port 9999 först
+                await trigger_camera_via_ws(self.printer_ip)
+
                 logger.info("Ansluter till Creality K1 WebRTC på %s...", self.webrtc_url)
                 rtc_cfg = RTCConfiguration(
                     iceServers=[RTCIceServer(urls="stun:stun.l.google.com:19302")]
