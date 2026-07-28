@@ -75,6 +75,18 @@ log_level_map = {
 
 logger = logging.getLogger("creality_webrtc")
 
+def prepare_offer_sdp(sdp: str) -> str:
+    """Filtrerar bort interna Docker-IPs (172.x) från offer SDP så skrivaren endast skickar WebRTC-paket till LAN-IP."""
+    lines = sdp.splitlines()
+    new_lines = []
+    for line in lines:
+        if line.startswith("a=candidate:"):
+            # Exkludera interna Docker subnät (172.17.*, 172.18.*, 172.19.*, 172.30.*) och IPv6 ULA-adresser
+            if " 172.17." in line or " 172.18." in line or " 172.19." in line or " 172.30." in line or " fd" in line:
+                continue
+        new_lines.append(line)
+    return "\r\n".join(new_lines) + "\r\n"
+
 def sanitize_sdp(sdp: str) -> str:
     """Sanerar SDP-svaret från skrivaren: slår ihop dubblerade a=fmtp-rader och ser till att H264-kodernas parametrar är kompletta."""
     logger.info("--- URSPRUNGLIG SDP ANSWER FRÅN SKRIVAREN ---\n%s", sdp)
@@ -178,7 +190,7 @@ class CameraBridge:
 
                 # Vänta på att ICE-gathering slutförs så alla lokala kandidater (IPs) inkluderas i offer
                 if self.pc.iceGatheringState != "complete":
-                    logger.info("Väntar på att lokala ICE-kandidater samlas in...")
+                    logger.info("Väntar på että lokala ICE-kandidater samlas in...")
                     gather_evt = asyncio.Event()
                     @self.pc.on("icegatheringstatechange")
                     def on_ice_state():
@@ -189,7 +201,8 @@ class CameraBridge:
                     except asyncio.TimeoutError:
                         logger.info("ICE gathering avslutades efter timeout, fortsätter...")
 
-                offer_sdp = self.pc.localDescription.sdp
+                # Filtrera bort Docker-interna subnät från offer SDP
+                offer_sdp = prepare_offer_sdp(self.pc.localDescription.sdp)
                 logger.info("Lokal SDP Offer som skickas till skrivaren:\n%s", offer_sdp)
 
                 # 2. Paketera i JSON & Base64-koda
