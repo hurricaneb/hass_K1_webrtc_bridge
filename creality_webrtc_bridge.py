@@ -10,8 +10,12 @@ import time
 from typing import Optional, Set
 import aiohttp
 from aiohttp import web
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 from PIL import Image
+
+# Force unbuffered stdout logging
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
 
 # Config file location when running as a Home Assistant Add-on
 HA_OPTIONS_PATH = "/data/options.json"
@@ -33,9 +37,9 @@ def load_config() -> dict:
             with open(HA_OPTIONS_PATH, "r", encoding="utf-8") as f:
                 user_options = json.load(f)
                 config.update(user_options)
-                logging.info("Laddade konfiguration från %s", HA_OPTIONS_PATH)
+                print(f"[INIT] Laddade konfiguration från {HA_OPTIONS_PATH}: {user_options}", flush=True)
         except Exception as err:
-            logging.warning("Kunde inte läsa %s (%s). Använder standardvärden.", HA_OPTIONS_PATH, err)
+            print(f"[WARN] Kunde inte läsa {HA_OPTIONS_PATH} ({err}). Använder standardvärden.", flush=True)
     else:
         # Check environment variables
         if os.environ.get("PRINTER_IP"):
@@ -65,6 +69,8 @@ log_level_map = {
 logging.basicConfig(
     level=log_level_map.get(config.get("log_level", "info").lower(), logging.INFO),
     format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout,
+    force=True,
 )
 logger = logging.getLogger("creality_webrtc")
 
@@ -132,7 +138,10 @@ class CameraBridge:
         while True:
             try:
                 logger.info("Ansluter till Creality K1 WebRTC på %s...", self.webrtc_url)
-                self.pc = RTCPeerConnection()
+                rtc_cfg = RTCConfiguration(
+                    iceServers=[RTCIceServer(urls="stun:stun.l.google.com:19302")]
+                )
+                self.pc = RTCPeerConnection(configuration=rtc_cfg)
                 self.pc.addTransceiver("video", direction="recvonly")
 
                 track_received = asyncio.Event()
@@ -343,8 +352,9 @@ async def start_app():
     await site.start()
     logger.info("MJPEG HTTP-server igång på http://0.0.0.0:%s/", cfg["stream_port"])
 
-    # Starta WebRTC-anslutningen i bakgrunden
-    await bridge.connect_webrtc()
+    # Starta WebRTC-anslutningen som bakgrundstask och vänta på att servern körs
+    webrtc_task = asyncio.create_task(bridge.connect_webrtc())
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     try:
