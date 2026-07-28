@@ -276,16 +276,18 @@ class CameraBridge:
         """Avkodar videoframes från WebRTC-spåret och konverterar till JPEG."""
         logger.info("Väntar på första bildrutan (Keyframe/IDR) från skrivarkameran...")
         
-        # Skicka RTCP PLI begäran om nyckelbildruta (Keyframe) till skrivaren tills första bilden tas emot
+        # Skicka RTCP PLI synkrotn utan await (då _send_rtcp är en vanlig metod, ej korrutin)
         async def request_keyframe_loop():
+            logger.info("Startar RTCP PLI begäran om nyckelbildruta (Keyframe)...")
             while self.connected and self.received_frames_count == 0:
                 try:
                     if self.pc:
                         for transceiver in self.pc.getTransceivers():
                             if transceiver.receiver and hasattr(transceiver.receiver, "_send_rtcp"):
-                                await transceiver.receiver._send_rtcp()
-                except Exception:
-                    pass
+                                logger.debug("Skickar RTCP PLI för att begära IDR keyframe...")
+                                transceiver.receiver._send_rtcp() # Synkront anrop utan await!
+                except Exception as err:
+                    logger.warning("Kunde inte skicka RTCP PLI: %s", err)
                 await asyncio.sleep(1.0)
 
         keyframe_task = asyncio.create_task(request_keyframe_loop())
