@@ -81,9 +81,7 @@ def prepare_offer_sdp(sdp: str) -> str:
     for line in lines:
         if line.startswith("m=video"):
             parts = line.split(" ")
-            # Lägg till 96 i början av m=video payload types: m=video <port> UDP/TLS/RTP/SAVPF 96 97 98 ...
             new_lines.append(" ".join(parts[:3] + ["96"] + parts[3:]))
-            # Skjut in rtpmap och fmtp för PT 96
             new_lines.append("a=rtpmap:96 H264/90000")
             new_lines.append("a=rtcp-fb:96 nack")
             new_lines.append("a=rtcp-fb:96 nack pli")
@@ -94,21 +92,49 @@ def prepare_offer_sdp(sdp: str) -> str:
     return "\r\n".join(new_lines) + "\r\n"
 
 def sanitize_sdp(sdp: str) -> str:
-    """Sanerar SDP-svaret från skrivaren: justerar profile-level-id vid behov."""
+    """Sanerar SDP-svaret från skrivaren: slår ihop dubblerade a=fmtp-rader så aiortc inte tappar parametrar."""
     logger.info("--- URSPRUNGLIG SDP ANSWER FRÅN SKRIVAREN ---\n%s", sdp)
     lines = sdp.splitlines()
-    new_lines = []
+
+    fmtp_params = {}
+    other_lines = []
 
     for line in lines:
         m = re.match(r'^a=fmtp:(\d+)\s+(.*)', line)
         if m:
             pt = m.group(1)
-            params = m.group(2)
-            new_params = re.sub(r'profile-level-id=[0-9a-fA-F]{6}', 'profile-level-id=42e01f', params)
-            new_lines.append(f"a=fmtp:{pt} {new_params}")
-            continue
+            param_str = m.group(2)
+            if pt not in fmtp_params:
+                fmtp_params[pt] = []
+            fmtp_params[pt].append(param_str)
+        else:
+            other_lines.append(line)
 
+    new_lines = []
+    added_fmtp = set()
+
+    for line in other_lines:
         new_lines.append(line)
+        m = re.match(r'^a=rtpmap:(\d+)\s+H264/90000', line, re.IGNORECASE)
+        if m:
+            pt = m.group(1)
+            if pt not in added_fmtp:
+                added_fmtp.add(pt)
+                combined = ";".join(fmtp_params.get(pt, []))
+                if "profile-level-id" not in combined:
+                    combined += ";profile-level-id=42e01f"
+                else:
+                    combined = re.sub(r'profile-level-id=[0-9a-fA-F]{6}', 'profile-level-id=42e01f', combined)
+
+                if "packetization-mode" not in combined:
+                    if pt == "96":
+                        combined += ";packetization-mode=0"
+                    else:
+                        combined += ";packetization-mode=1"
+
+                # Rensa dubbla semikoloner om några uppstod
+                combined = re.sub(r';+', ';', combined).strip(';')
+                new_lines.append(f"a=fmtp:{pt} {combined}")
 
     sanitized = "\r\n".join(new_lines) + "\r\n"
     logger.info("--- SANERAD SDP ANSWER FÖR AIORTC ---\n%s", sanitized)
