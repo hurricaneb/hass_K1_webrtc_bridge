@@ -1,0 +1,277 @@
+import asyncio
+import base64
+import io
+import json
+import logging
+import os
+import sys
+import time
+from typing import Optional, Set
+import aiohttp
+from aiohttp import web
+from aiortc import RTCPeerConnection, RTCSessionDescription
+from PIL import Image
+
+# Config file location when running as a Home Assistant Add-on
+HA_OPTIONS_PATH = "/data/options.json"
+
+# Fallback / Default settings
+DEFAULT_CONFIG = {
+    "printer_ip": "192.168.10.161",
+    "printer_port": 8000,
+    "stream_port": 8080,
+    "target_fps": 15,
+    "jpeg_quality": 80,
+    "log_level": "info",
+}
+
+def load_config() -> dict:
+    config = DEFAULT_CONFIG.copy()
+    if os.path.exists(HA_OPTIONS_PATH):
+        try:
+            with open(HA_OPTIONS_PATH, "r", encoding="utf-8") as f:
+                user_options = json.load(f)
+                config.update(user_options)
+                logging.info("Laddade konfiguration från %s", HA_OPTIONS_PATH)
+        except Exception as err:
+            logging.warning("Kunde inte läsa %s (%s). Använder standardvärden.", HA_OPTIONS_PATH, err)
+    else:
+        # Check environment variables
+        if os.environ.get("PRINTER_IP"):
+            config["printer_ip"] = os.environ.get("PRINTER_IP")
+        if os.environ.get("PRINTER_PORT"):
+            config["printer_port"] = int(os.environ.get("PRINTER_PORT"))
+        if os.environ.get("STREAM_PORT"):
+            config["stream_port"] = int(os.environ.get("STREAM_PORT"))
+        if os.environ.get("TARGET_FPS"):
+            config["target_fps"] = int(os.environ.get("TARGET_FPS"))
+        if os.environ.get("JPEG_QUALITY"):
+            config["jpeg_quality"] = int(os.environ.get("JPEG_QUALITY"))
+        if os.environ.get("LOG_LEVEL"):
+            config["log_level"] = os.environ.get("LOG_LEVEL")
+
+    return config
+
+config = load_config()
+
+log_level_map = {
+    "trace": logging.DEBUG,
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+}
+logging.basicConfig(
+    level=log_level_map.get(config.get("log_level", "info").lower(), logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("creality_webrtc")
+
+class CameraBridge:
+    def __init__(self, cfg: dict):
+        self.printer_ip = cfg["printer_ip"]
+        self.printer_port = cfg["printer_port"]
+        self.stream_port = cfg["stream_port"]
+        self.target_fps = cfg["target_fps"]
+        self.jpeg_quality = cfg["jpeg_quality"]
+
+        self.webrtc_url = f"http://{self.printer_ip}:{self.printer_port}/call/webrtc_local"
+        self.latest_frame: Optional[bytes] = None
+        self.frame_event = asyncio.Event()
+        self.connected = False
+        self.last_frame_time = 0.0
+        self.fps_interval = 1.0 / self.target_fps if self.target_fps > 0 else 0.0
+        self.pc: Optional[RTCPeerConnection] = None
+
+    async def connect_webrtc(self):
+        """Initierar WebRTC handskakning med skrivaren och hanterar mottagna bildrutor."""
+        while True:
+            try:
+                logger.info("Ansluter till Creality K1 WebRTC på %s...", self.webrtc_url)
+                self.pc = RTCPeerConnection()
+                self.pc.addTransceiver("video", direction="recvonly")
+
+                track_received = asyncio.Event()
+
+                @self.pc.on("track")
+                def on_track(track):
+                    if track.kind == "video":
+                        logger.info("Mottog videotrack från skrivaren! Börjar avkoda...")
+                        track_received.set()
+                        asyncio.create_task(self._process_video_track(track))
+
+                @self.pc.on("connectionstatechange")
+                async def on_connectionstatechange():
+                    logger.info("WebRTC anslutningsstatus ändrades till: %s", self.pc.connectionState)
+                    if self.pc.connectionState in ["failed", "closed", "disconnected"]:
+                        self.connected = False
+
+                # 1. Skapa lokal SDP offer
+                offer = await self.pc.createOffer()
+                await self.pc.setLocalDescription(offer)
+
+                # 2. Paketera i JSON & Base64-koda
+                payload_json = {
+                    "type": "offer",
+                    "sdp": self.pc.localDescription.sdp
+                }
+                b64_payload = base64.b64encode(json.dumps(payload_json).encode("utf-8")).decode("utf-8")
+
+                # 3. Skicka till skrivaren via HTTP POST
+                timeout = aiohttp.ClientTimeout(total=10)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    headers = {"Content-Type": "text/plain"}
+                    async with session.post(self.webrtc_url, data=b64_payload, headers=headers) as resp:
+                        if resp.status == 200:
+                            raw_answer = await resp.text()
+                            decoded_json = json.loads(base64.b64decode(raw_answer).decode("utf-8"))
+                            answer = RTCSessionDescription(sdp=decoded_json["sdp"], type=decoded_json["type"])
+                            await self.pc.setRemoteDescription(answer)
+                            logger.info("WebRTC-handskakning genomförd med skrivaren!")
+                            self.connected = True
+                        else:
+                            logger.error("Fel vid WebRTC-anrop till skrivaren (HTTP %s)", resp.status)
+                            self.connected = False
+                            await self.pc.close()
+                            await asyncio.sleep(5)
+                            continue
+
+                # Vänta på att spåret startar eller anslutningen misslyckas
+                try:
+                    await asyncio.wait_for(track_received.wait(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout i väntan på videotrack från skrivaren.")
+
+                # Håll loopen igång så länge anslutningen är aktiv
+                while self.connected and self.pc and self.pc.connectionState not in ["failed", "closed"]:
+                    await asyncio.sleep(2)
+
+            except asyncio.CancelledError:
+                logger.info("Avbryter WebRTC-anslutning...")
+                break
+            except Exception as err:
+                logger.error("Ett fel uppstod i WebRTC-loopen: %s", err, exc_info=True)
+
+            self.connected = False
+            if self.pc:
+                await self.pc.close()
+                self.pc = None
+
+            logger.info("Återansluter om 5 sekunder...")
+            await asyncio.sleep(5)
+
+    async def _process_video_track(self, track):
+        """Avkodar videoframes från WebRTC-spåret och konverterar till JPEG."""
+        while self.connected:
+            try:
+                frame = await track.recv()
+                now = time.time()
+                if self.fps_interval > 0 and (now - self.last_frame_time) < self.fps_interval:
+                    continue
+                self.last_frame_time = now
+
+                # Konvertera PyAV frame till PIL Image och spara som JPEG
+                img: Image.Image = frame.to_image()
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=self.jpeg_quality)
+                self.latest_frame = buf.getvalue()
+                self.frame_event.set()
+                self.frame_event.clear()
+            except Exception as err:
+                logger.warning("Fel vid mottagning/konvertering av videoframe: %s", err)
+                break
+
+    async def handle_stream(self, request: web.Request) -> web.StreamResponse:
+        """Serverar MJPEG-ström (compatible med Home Assistant mjpeg integration)."""
+        response = web.StreamResponse(
+            status=200,
+            reason="OK",
+            headers={
+                "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "Connection": "close",
+            },
+        )
+        await response.prepare(request)
+
+        logger.debug("Klient ansluten till MJPEG-ström från %s", request.remote)
+        try:
+            while True:
+                if self.latest_frame is None:
+                    await asyncio.sleep(0.1)
+                    continue
+
+                frame_bytes = self.latest_frame
+                header = (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Content-Length: " + str(len(frame_bytes)).encode("utf-8") + b"\r\n\r\n"
+                )
+                await response.write(header + frame_bytes + b"\r\n")
+                await asyncio.sleep(self.fps_interval if self.fps_interval > 0 else 0.03)
+        except (ConnectionResetError, asyncio.CancelledError):
+            logger.debug("MJPEG-streamklient frånkopplad (%s)", request.remote)
+        except Exception as err:
+            logger.warning("Ett fel uppstod under MJPEG-strömning: %s", err)
+        return response
+
+    async def handle_snapshot(self, request: web.Request) -> web.Response:
+        """Returnerar den senaste JPEG-bildrutan som en enskild bild."""
+        if self.latest_frame is None:
+            return web.Response(status=503, text="Kamera eller videoström ännu inte redo.")
+        return web.Response(
+            body=self.latest_frame,
+            content_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
+
+    async def handle_status(self, request: web.Request) -> web.Response:
+        """Returnerar statusinformation om kamerabryggan."""
+        status = {
+            "status": "online" if self.connected and self.latest_frame else "offline",
+            "connected": self.connected,
+            "has_frame": self.latest_frame is not None,
+            "printer_ip": self.printer_ip,
+            "target_fps": self.target_fps,
+            "jpeg_quality": self.jpeg_quality,
+        }
+        return web.json_response(status)
+
+async def start_app():
+    cfg = load_config()
+    logger.info("Startar Creality K1 WebRTC Camera Bridge med konfiguration:")
+    logger.info("  Skrivar-IP: %s", cfg["printer_ip"])
+    logger.info("  Skrivarport: %s", cfg["printer_port"])
+    logger.info("  Strömport (HTTP): %s", cfg["stream_port"])
+    logger.info("  Mål FPS: %s", cfg["target_fps"])
+    logger.info("  JPEG-kvalitet: %s", cfg["jpeg_quality"])
+
+    bridge = CameraBridge(cfg)
+
+    app = web.Application()
+    app.router.add_get("/", bridge.handle_stream)
+    app.router.add_get("/stream", bridge.handle_stream)
+    app.router.add_get("/snapshot", bridge.handle_snapshot)
+    app.router.add_get("/snapshot.jpg", bridge.handle_snapshot)
+    app.router.add_get("/status", bridge.handle_status)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", cfg["stream_port"])
+    await site.start()
+    logger.info("MJPEG HTTP-server igång på http://0.0.0.0:%s/", cfg["stream_port"])
+
+    # Starta WebRTC-anslutningen i bakgrunden
+    await bridge.connect_webrtc()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(start_app())
+    except KeyboardInterrupt:
+        logger.info("Stänger av kamerabryggan...")
