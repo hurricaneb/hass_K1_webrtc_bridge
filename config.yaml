@@ -1,6 +1,6 @@
 name: "Creality K1 WebRTC Camera Bridge"
 slug: "creality_webrtc_bridge"
-version: "1.0.1"
+version: "1.0.2"
 description: "WebRTC camera bridge for Creality K1 / K1 Max (new firmware) to Home Assistant MJPEG stream"
 url: "https://github.com/hurricaneb/hass_K1_webrtc_bridge"
 arch:
@@ -12,11 +12,7 @@ arch:
 startup: services
 boot: auto
 init: false
-host_network: false
-ports:
-  8080/tcp: 8080
-ports_description:
-  8080/tcp: "MJPEG Video Stream & Snapshot HTTP Server"
+host_network: true
 options:
   printer_ip: "192.168.10.161"
   printer_port: 8000
