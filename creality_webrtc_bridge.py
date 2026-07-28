@@ -94,6 +94,11 @@ def sanitize_sdp(sdp: str) -> str:
             existing_fmtp_pts.add(m.group(1))
 
     for line in lines:
+        # Om skrivaren svarar med a=setup:passive, tvinga a=setup:active i svaret så att aiortc/skrivaren genomför DTLS korrekt
+        if line.strip() == "a=setup:passive":
+            new_lines.append("a=setup:active")
+            continue
+
         fmtp_match = re.match(r'^a=fmtp:(\d+)', line)
         if fmtp_match and fmtp_match.group(1) in h264_pts:
             pt = fmtp_match.group(1)
@@ -181,12 +186,15 @@ class CameraBridge:
                     except asyncio.TimeoutError:
                         logger.info("ICE gathering avslutades efter timeout, fortsätter...")
 
-                logger.info("Lokal SDP Offer som skickas till skrivaren:\n%s", self.pc.localDescription.sdp)
+                offer_sdp = self.pc.localDescription.sdp
+                # Anpassa a=setup i offer till active för att tvinga DTLS-handskakningen att genomföras utan timeout
+                offer_sdp_active = offer_sdp.replace("a=setup:actpass", "a=setup:active")
+                logger.info("Lokal SDP Offer som skickas till skrivaren:\n%s", offer_sdp_active)
 
                 # 2. Paketera i JSON & Base64-koda
                 payload_json = {
                     "type": "offer",
-                    "sdp": self.pc.localDescription.sdp
+                    "sdp": offer_sdp_active
                 }
                 b64_payload = base64.b64encode(json.dumps(payload_json).encode("utf-8")).decode("utf-8")
 
