@@ -18,13 +18,13 @@ try:
 except ImportError:
     RtcpPsfbPacket = None
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 # Force unbuffered stdout logging
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
 
-# Patch RTCDtlsTransport so unencrypted RTP packets from Creality printer are passed directly to PyAV decoder
+# Monkey-patch RTCDtlsTransport so unencrypted RTP packets from Creality printer are passed directly to PyAV decoder
 _original_recv_next = RTCDtlsTransport._recv_next
 
 async def _patched_recv_next(self):
@@ -50,6 +50,17 @@ async def _patched_recv_next(self):
             return await _original_recv_next(self)
 
 RTCDtlsTransport._recv_next = _patched_recv_next
+
+def create_placeholder_frame(status_text: str = "Creality K1 Max WebRTC Bridge - Ansluten, väntar på ström...") -> bytes:
+    """Skapar en mörk JPEG-bild med statustext så Home Assistant sätter kameran som Aktiv."""
+    img = Image.new("RGB", (640, 360), color=(20, 24, 33))
+    draw = ImageDraw.Draw(img)
+    # Rita en enkel indikator-cirkel och text
+    draw.ellipse((40, 165, 70, 195), fill=(0, 200, 100))
+    draw.text((85, 172), status_text, fill=(240, 240, 240))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    return buf.getvalue()
 
 # Config file location when running as a Home Assistant Add-on
 HA_OPTIONS_PATH = "/data/options.json"
@@ -186,6 +197,7 @@ class CameraBridge:
         self.jpeg_quality = cfg["jpeg_quality"]
 
         self.webrtc_url = f"http://{self.printer_ip}:{self.printer_port}/call/webrtc_local"
+        self.placeholder_frame = create_placeholder_frame()
         self.latest_frame: Optional[bytes] = None
         self.frame_event = asyncio.Event()
         self.connected = False
@@ -376,18 +388,14 @@ class CameraBridge:
         logger.debug("Klient ansluten till MJPEG-ström från %s", request.remote)
         try:
             while True:
-                if self.latest_frame is None:
-                    await asyncio.sleep(0.1)
-                    continue
-
-                frame_bytes = self.latest_frame
+                frame_bytes = self.latest_frame if self.latest_frame is not None else self.placeholder_frame
                 header = (
                     b"--frame\r\n"
                     b"Content-Type: image/jpeg\r\n"
                     b"Content-Length: " + str(len(frame_bytes)).encode("utf-8") + b"\r\n\r\n"
                 )
                 await response.write(header + frame_bytes + b"\r\n")
-                await asyncio.sleep(self.fps_interval if self.fps_interval > 0 else 0.03)
+                await asyncio.sleep(self.fps_interval if self.fps_interval > 0 else 0.07)
         except (ConnectionResetError, asyncio.CancelledError):
             logger.debug("MJPEG-streamklient frånkopplad (%s)", request.remote)
         except Exception as err:
@@ -395,11 +403,10 @@ class CameraBridge:
         return response
 
     async def handle_snapshot(self, request: web.Request) -> web.Response:
-        """Returnerar den senaste JPEG-bildrutan som en enskild bild."""
-        if self.latest_frame is None:
-            return web.Response(status=503, text="Kamera eller videoström ännu inte redo.")
+        """Returnerar den senaste JPEG-bildrutan eller statusbild så Home Assistant visar Aktiv."""
+        frame_bytes = self.latest_frame if self.latest_frame is not None else self.placeholder_frame
         return web.Response(
-            body=self.latest_frame,
+            body=frame_bytes,
             content_type="image/jpeg",
             headers={
                 "Cache-Control": "no-cache, no-store, must-revalidate",
@@ -411,7 +418,7 @@ class CameraBridge:
     async def handle_status(self, request: web.Request) -> web.Response:
         """Returnerar statusinformation om kamerabryggan."""
         status = {
-            "status": "online" if self.connected and self.latest_frame else "offline",
+            "status": "online" if self.connected else "standby",
             "connected": self.connected,
             "has_frame": self.latest_frame is not None,
             "received_frames_count": self.received_frames_count,
