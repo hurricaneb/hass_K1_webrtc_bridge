@@ -75,10 +75,13 @@ logging.basicConfig(
 logger = logging.getLogger("creality_webrtc")
 
 def prepare_offer_sdp(sdp: str) -> str:
-    """Lägger till Payload Type 96 (H264 packetization-mode=0) i offer SDP så att aiortc stöder skrivarens PT 96."""
+    """Lägger till Payload Type 96 och sätter a=setup:passive i offer SDP så skrivaren agerar DTLS active."""
     lines = sdp.splitlines()
     new_lines = []
     for line in lines:
+        if line.startswith("a=setup:actpass"):
+            new_lines.append("a=setup:passive")
+            continue
         if line.startswith("m=video"):
             parts = line.split(" ")
             new_lines.append(" ".join(parts[:3] + ["96"] + parts[3:]))
@@ -92,7 +95,7 @@ def prepare_offer_sdp(sdp: str) -> str:
     return "\r\n".join(new_lines) + "\r\n"
 
 def sanitize_sdp(sdp: str) -> str:
-    """Sanerar SDP-svaret från skrivaren: slår ihop dubblerade a=fmtp-rader så aiortc inte tappar parametrar."""
+    """Sanerar SDP-svaret från skrivaren: slår ihop dubblerade a=fmtp-rader och sätter a=setup:active vid behov."""
     logger.info("--- URSPRUNGLIG SDP ANSWER FRÅN SKRIVAREN ---\n%s", sdp)
     lines = sdp.splitlines()
 
@@ -100,6 +103,10 @@ def sanitize_sdp(sdp: str) -> str:
     other_lines = []
 
     for line in lines:
+        if line.strip() == "a=setup:passive":
+            other_lines.append("a=setup:active")
+            continue
+
         m = re.match(r'^a=fmtp:(\d+)\s+(.*)', line)
         if m:
             pt = m.group(1)
@@ -205,7 +212,7 @@ class CameraBridge:
                     except asyncio.TimeoutError:
                         logger.info("ICE gathering avslutades efter timeout, fortsätter...")
 
-                # Förbered erbjudandet med stöd för PT 96 (packetization-mode=0)
+                # Förbered erbjudandet med stöd för PT 96 och passive DTLS
                 offer_sdp = prepare_offer_sdp(self.pc.localDescription.sdp)
                 logger.info("Lokal SDP Offer som skickas till skrivaren:\n%s", offer_sdp)
 
