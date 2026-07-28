@@ -199,10 +199,15 @@ class CameraBridge:
                 }
                 b64_payload = base64.b64encode(json.dumps(payload_json).encode("utf-8")).decode("utf-8")
 
-                # 3. Skicka till skrivaren via HTTP POST
+                # 3. Skicka till skrivaren via HTTP POST med Origin & User-Agent-headers för WebRTC-auktorisering
                 timeout = aiohttp.ClientTimeout(total=10)
                 async with aiohttp.ClientSession(timeout=timeout) as session:
-                    headers = {"Content-Type": "text/plain"}
+                    headers = {
+                        "Content-Type": "text/plain",
+                        "Origin": f"http://{self.printer_ip}",
+                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Referer": f"http://{self.printer_ip}/"
+                    }
                     async with session.post(self.webrtc_url, data=b64_payload, headers=headers) as resp:
                         if resp.status == 200:
                             raw_answer = await resp.text()
