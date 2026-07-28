@@ -75,44 +75,24 @@ logging.basicConfig(
 logger = logging.getLogger("creality_webrtc")
 
 def sanitize_sdp(sdp: str) -> str:
-    """Sanerar SDP-svaret från skrivaren så att aiortc godkänner H264 parametrar."""
+    """Sanerar SDP-svaret från skrivaren: behåller ursprungligt packetization-mode för PT 96/101 och justerar setup."""
     logger.info("--- URSPRUNGLIG SDP ANSWER FRÅN SKRIVAREN ---\n%s", sdp)
     lines = sdp.splitlines()
     new_lines = []
 
-    # Hitta alla payload types för H264 i rtpmap
-    h264_pts = set()
     for line in lines:
-        m = re.match(r'^a=rtpmap:(\d+)\s+H264/90000', line, re.IGNORECASE)
-        if m:
-            h264_pts.add(m.group(1))
-
-    existing_fmtp_pts = set()
-    for line in lines:
-        m = re.match(r'^a=fmtp:(\d+)', line)
-        if m:
-            existing_fmtp_pts.add(m.group(1))
-
-    for line in lines:
-        # Om skrivaren svarar med a=setup:passive, tvinga a=setup:active i svaret så att aiortc/skrivaren genomför DTLS korrekt
+        # Om skrivaren svarar med a=setup:passive, tvinga a=setup:active i svaret så att DTLS genomförs utan timeout
         if line.strip() == "a=setup:passive":
             new_lines.append("a=setup:active")
             continue
 
-        fmtp_match = re.match(r'^a=fmtp:(\d+)', line)
-        if fmtp_match and fmtp_match.group(1) in h264_pts:
-            pt = fmtp_match.group(1)
-            # Tvinga aiortc-kompatibla fmtp-parametrar
-            new_lines.append(f"a=fmtp:{pt} level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f")
-            continue
-
-        rtpmap_match = re.match(r'^a=rtpmap:(\d+)\s+H264/90000', line, re.IGNORECASE)
-        if rtpmap_match:
-            pt = rtpmap_match.group(1)
-            new_lines.append(line)
-            if pt not in existing_fmtp_pts:
-                # Om a=fmtp saknas för H264, lägg till den direkt under rtpmap
-                new_lines.append(f"a=fmtp:{pt} level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f")
+        # Ändra INTE packetization-mode! Ersätt endast profile-level-id om det är något annat än 42e01f
+        m = re.match(r'^a=fmtp:(\d+)\s+(.*)', line)
+        if m:
+            pt = m.group(1)
+            params = m.group(2)
+            new_params = re.sub(r'profile-level-id=[0-9a-fA-F]{6}', 'profile-level-id=42e01f', params)
+            new_lines.append(f"a=fmtp:{pt} {new_params}")
             continue
 
         new_lines.append(line)
