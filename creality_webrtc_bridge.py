@@ -125,6 +125,7 @@ class CameraBridge:
         self.last_frame_time = 0.0
         self.fps_interval = 1.0 / self.target_fps if self.target_fps > 0 else 0.0
         self.pc: Optional[RTCPeerConnection] = None
+        self.received_frames_count = 0
 
     async def connect_webrtc(self):
         """Initierar WebRTC handskakning med skrivaren och hanterar mottagna bildrutor."""
@@ -138,20 +139,40 @@ class CameraBridge:
 
                 @self.pc.on("track")
                 def on_track(track):
+                    logger.info("Mottog track event! Track kind: %s, ID: %s", track.kind, track.id)
                     if track.kind == "video":
-                        logger.info("Mottog videotrack från skrivaren! Börjar avkoda videoström...")
+                        logger.info("Mottog videotrack! Börjar avkoda videoström...")
                         track_received.set()
                         asyncio.create_task(self._process_video_track(track))
 
                 @self.pc.on("connectionstatechange")
                 async def on_connectionstatechange():
-                    logger.info("WebRTC anslutningsstatus ändrades till: %s", self.pc.connectionState)
+                    logger.info("WebRTC connectionState: %s", self.pc.connectionState)
                     if self.pc.connectionState in ["failed", "closed", "disconnected"]:
                         self.connected = False
+
+                @self.pc.on("iceconnectionstatechange")
+                async def on_iceconnectionstatechange():
+                    logger.info("WebRTC iceConnectionState: %s", self.pc.iceConnectionState)
 
                 # 1. Skapa lokal SDP offer
                 offer = await self.pc.createOffer()
                 await self.pc.setLocalDescription(offer)
+
+                # Vänta på att ICE-gathering slutförs så alla lokala kandidater (IPs) inkluderas i offer!
+                if self.pc.iceGatheringState != "complete":
+                    logger.info("Väntar på att lokala ICE-kandidater samlas in...")
+                    gather_evt = asyncio.Event()
+                    @self.pc.on("icegatheringstatechange")
+                    def on_ice_state():
+                        if self.pc.iceGatheringState == "complete":
+                            gather_evt.set()
+                    try:
+                        await asyncio.wait_for(gather_evt.wait(), timeout=3.0)
+                    except asyncio.TimeoutError:
+                        logger.info("ICE gathering avslutades efter timeout, fortsätter...")
+
+                logger.info("Lokal SDP Offer som skickas till skrivaren:\n%s", self.pc.localDescription.sdp)
 
                 # 2. Paketera i JSON & Base64-koda
                 payload_json = {
@@ -189,7 +210,7 @@ class CameraBridge:
                 try:
                     await asyncio.wait_for(track_received.wait(), timeout=15.0)
                 except asyncio.TimeoutError:
-                    logger.warning("Timeout i väntan på videotrack från skrivaren.")
+                    logger.warning("Timeout (15s) i väntan på videotrack-signal från skrivaren.")
 
                 # Håll loopen igång så länge anslutningen är aktiv
                 while self.connected and self.pc and self.pc.connectionState not in ["failed", "closed"]:
@@ -211,9 +232,14 @@ class CameraBridge:
 
     async def _process_video_track(self, track):
         """Avkodar videoframes från WebRTC-spåret och konverterar till JPEG."""
+        logger.info("Börjar ta emot bildrutor från videospåret...")
         while self.connected:
             try:
                 frame = await track.recv()
+                self.received_frames_count += 1
+                if self.received_frames_count == 1:
+                    logger.info("Mottog FÖRSTA bildrutan från skrivarkameran! (Upplösning: %sx%s)", frame.width, frame.height)
+
                 now = time.time()
                 if self.fps_interval > 0 and (now - self.last_frame_time) < self.fps_interval:
                     continue
@@ -286,6 +312,7 @@ class CameraBridge:
             "status": "online" if self.connected and self.latest_frame else "offline",
             "connected": self.connected,
             "has_frame": self.latest_frame is not None,
+            "received_frames_count": self.received_frames_count,
             "printer_ip": self.printer_ip,
             "target_fps": self.target_fps,
             "jpeg_quality": self.jpeg_quality,
