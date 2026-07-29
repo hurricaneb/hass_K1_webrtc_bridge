@@ -189,11 +189,11 @@ async def trigger_camera_via_ws(printer_ip: str):
     ws_url = f"ws://{printer_ip}:9999/"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(ws_url, timeout=3.0) as ws:
-                logger.info("Skickar getToken & camera init till skrivarens kontroll-WebSocket på port 9999...")
-                cmd1 = {"method": "get", "params": {"reqGcodeFile": 1, "reqGcodeList": 1, "reqMaterials": 1, "boxsInfo": 1, "boxConfig": 1, "getToken": 1}}
-                await ws.send_str(json.dumps(cmd1))
+            async with session.ws_connect(ws_url) as ws:
+                logger.info("WebSocket 9999 ansluten. Skickar initialization (getToken & video_start)...")
+                await ws.send_str(json.dumps({"method": "get", "params": {"reqGcodeFile": 1, "getToken": 1}}))
                 await ws.send_str(json.dumps({"cmd": "video_start"}))
+                await ws.send_str(json.dumps({"method": "set", "params": {"video_start": 1}}))
                 await asyncio.sleep(0.5)
     except Exception as err:
         logger.debug("WebSocket-anrop på port 9999: %s", err)
