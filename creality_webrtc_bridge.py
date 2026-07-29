@@ -92,12 +92,19 @@ def prepare_offer_sdp(sdp: str) -> str:
     """Rensar offer SDP och tvingar fram giltig RFC4566-struktur med m=video 9, Payload Type 106 & 96 samt a=setup:active."""
     lines = sdp.splitlines()
     new_lines = []
+    cand_idx = 0
     
     for line in lines:
         if line.startswith("a=candidate:"):
             if " 172." in line or " fd" in line or " srflx" in line:
                 continue
-            new_lines.append(line)
+            parts = line.split(" ")
+            if len(parts) >= 6:
+                # Formatera som Creality Print (a=candidate:0 1 udp 2130706431 <IP> <PORT> typ host generation 0)
+                new_lines.append(f"a=candidate:{cand_idx} 1 udp {parts[3]} {parts[4]} {parts[5]} typ host generation 0")
+                cand_idx += 1
+            else:
+                new_lines.append(line)
         elif line.startswith("m=video"):
             parts = line.split(" ")
             new_lines.append(f"{parts[0]} 9 {parts[2]} 106 96 " + " ".join(parts[3:]))
