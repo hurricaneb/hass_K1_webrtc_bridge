@@ -130,55 +130,20 @@ def prepare_offer_sdp(sdp: str) -> str:
     return sdp_out
 
 def sanitize_sdp(sdp: str) -> str:
-    """Sanerar SDP-svaret från skrivaren: slår ihop dubblerade a=fmtp-rader och ser till att H264-kodernas parametrar är kompletta."""
-    logger.info("--- URSPRUNGLIG SDP ANSWER FRÅN SKRIVAREN ---\n%s", sdp)
+    """Sanerar SDP-svaret från skrivaren: slår ihop dubblerade a=fmtp och a=rtpmap rader samt tar bort dubbla PT i m=video."""
     lines = sdp.splitlines()
-
-    fmtp_params = {}
-    other_lines = []
+    new_lines = []
+    seen_lines = set()
 
     for line in lines:
-        m = re.match(r'^a=fmtp:(\d+)\s+(.*)', line)
-        if m:
-            pt = m.group(1)
-            param_str = m.group(2)
-            if pt not in fmtp_params:
-                fmtp_params[pt] = []
-            fmtp_params[pt].append(param_str)
-        else:
-            other_lines.append(line)
-
-    new_lines = []
-    added_fmtp = set()
-    added_rtpmap = set()
-
-    for line in other_lines:
         if line.startswith("m=video"):
             parts = line.split(" ")
             pts = list(dict.fromkeys(parts[3:]))
             new_lines.append(f"{parts[0]} {parts[1]} {parts[2]} " + " ".join(pts))
-        elif re.match(r'^a=rtpmap:(\d+)\s+H264/90000', line, re.IGNORECASE):
-            m = re.match(r'^a=rtpmap:(\d+)\s+H264/90000', line, re.IGNORECASE)
-            pt = m.group(1)
-            if pt not in added_rtpmap:
-                added_rtpmap.add(pt)
-                new_lines.append(line)
-            if pt not in added_fmtp:
-                added_fmtp.add(pt)
-                combined = ";".join(fmtp_params.get(pt, []))
-                if "profile-level-id" not in combined:
-                    combined += ";profile-level-id=42e01f"
-                else:
-                    combined = re.sub(r'profile-level-id=[0-9a-fA-F]{6}', 'profile-level-id=42e01f', combined)
-
-                if "packetization-mode" not in combined:
-                    combined += ";packetization-mode=1"
-                else:
-                    combined = re.sub(r'packetization-mode=\d', 'packetization-mode=1', combined)
-
-                combined = re.sub(r';+', ';', combined).strip(';')
-                new_lines.append(f"a=fmtp:{pt} {combined}")
+        elif line in seen_lines and (line.startswith("a=rtpmap:") or line.startswith("a=fmtp:")):
+            continue
         else:
+            seen_lines.add(line)
             new_lines.append(line)
 
     sanitized = "\r\n".join(new_lines) + "\r\n"
