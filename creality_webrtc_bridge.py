@@ -11,22 +11,25 @@ from typing import Optional, Set
 import aiohttp
 from aiohttp import web
 import OpenSSL.SSL as SSL
-from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer, RTCCertificate
 from aiortc.rtcdtlstransport import RTCDtlsTransport
 
-# MONKEY-PATCH RTCDTLSTRANSPORT TILL ATT TILLÅTA DTLS 1.0 (SSL.DTLS1_VERSION) FÖR CPR_WEBRTC
-_orig_dtls_init = RTCDtlsTransport.__init__
-def _patched_dtls_init(self, transport, remote_description):
-    _orig_dtls_init(self, transport, remote_description)
-    try:
-        if hasattr(self, "_RTCDtlsTransport__ctx"):
-            ctx = getattr(self, "_RTCDtlsTransport__ctx")
-            ctx.set_min_proto_version(SSL.DTLS1_VERSION)
-            logging.getLogger(__name__).info("DTLS min protocol version satt till DTLS 1.0 (SSL.DTLS1_VERSION)")
-    except Exception as err:
-        logging.getLogger(__name__).warning("Kunde inte sätta DTLS1_VERSION: %s", err)
+# MONKEY-PATCH RTCCERTIFICATE TO SUPPORT RSA & ECDSA CIPHERS + DTLS 1.0 FOR CPR_WEBRTC
+_orig_create_ssl_context = RTCCertificate._create_ssl_context
 
-RTCDtlsTransport.__init__ = _patched_dtls_init
+def _patched_create_ssl_context(self, srtp_profiles):
+    ctx = _orig_create_ssl_context(self, srtp_profiles)
+    try:
+        ctx.set_min_proto_version(SSL.DTLS1_VERSION)
+    except Exception as err:
+        logging.getLogger(__name__).debug("Kunde inte sätta DTLS1_VERSION: %s", err)
+    ctx.set_cipher_list(
+        b"DEFAULT:HIGH:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA:ECDHE-ECDSA-AES128-SHA:AES128-SHA"
+    )
+    logging.getLogger(__name__).info("DTLS SSL Context konfigurerad med RSA & ECDSA ciphers + DTLS 1.0")
+    return ctx
+
+RTCCertificate._create_ssl_context = _patched_create_ssl_context
 
 try:
     from aiortc.rtp import RtcpPsfbPacket
