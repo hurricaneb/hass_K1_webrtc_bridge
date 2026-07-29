@@ -130,13 +130,27 @@ def prepare_offer_sdp(sdp: str) -> str:
     return sdp_out
 
 def sanitize_sdp(sdp: str) -> str:
-    """Sanerar SDP-svaret från skrivaren: slår ihop dubblerade a=fmtp och a=rtpmap rader samt tar bort dubbla PT i m=video."""
+    """Sanerar SDP-svaret från skrivaren: slår ihop alla a=fmtp-parametrar för varje payload type."""
+    logger.info("--- URSPRUNGLIG SDP ANSWER FRÅN SKRIVAREN ---\n%s", sdp)
     lines = sdp.splitlines()
-    new_lines = []
-    seen_rtpmap = set()
-    seen_fmtp = set()
+    fmtp_map = {}
+    other_lines = []
 
     for line in lines:
+        if line.startswith("a=fmtp:"):
+            parts = line[7:].strip().split(" ", 1)
+            if len(parts) == 2:
+                pt, params = parts[0], parts[1]
+                if pt not in fmtp_map:
+                    fmtp_map[pt] = []
+                fmtp_map[pt].append(params)
+        else:
+            other_lines.append(line)
+
+    new_lines = []
+    seen_rtpmap = set()
+
+    for line in other_lines:
         if line.startswith("m=video"):
             parts = line.split(" ")
             pts = list(dict.fromkeys(parts[3:]))
@@ -149,14 +163,13 @@ def sanitize_sdp(sdp: str) -> str:
                     continue
                 seen_rtpmap.add(pt)
             new_lines.append(line)
-        elif line.startswith("a=fmtp:"):
-            m = re.match(r'^a=fmtp:(\d+)', line)
-            if m:
-                pt = m.group(1)
-                if pt in seen_fmtp:
-                    continue
-                seen_fmtp.add(pt)
-            new_lines.append(line)
+            if pt in fmtp_map:
+                combined = ";".join(fmtp_map[pt])
+                if "packetization-mode" not in combined:
+                    combined += ";packetization-mode=1"
+                if "profile-level-id" not in combined:
+                    combined += ";profile-level-id=42e01f"
+                new_lines.append(f"a=fmtp:{pt} {combined}")
         else:
             new_lines.append(line)
 
