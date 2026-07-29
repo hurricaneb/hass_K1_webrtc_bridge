@@ -225,11 +225,14 @@ class CameraBridge:
 
                 self.pc.addTransceiver("video", direction="recvonly")
 
+                track_received = asyncio.Event()
+
                 @self.pc.on("track")
                 def on_track(track):
                     logger.info("Mottog track event! Track kind: %s, ID: %s", track.kind, track.id)
                     if track.kind == "video":
                         logger.info("Mottog videotrack! Börjar avkoda videoström...")
+                        track_received.set()
                         asyncio.create_task(self._process_video_track(track))
 
                 @self.pc.on("iceconnectionstatechange")
