@@ -332,11 +332,14 @@ class CameraBridge:
 
             self.connected = False
             if self.pc:
-                await self.pc.close()
+                try:
+                    await self.pc.close()
+                except Exception:
+                    pass
                 self.pc = None
 
-            logger.info("Återansluter om 5 sekunder...")
-            await asyncio.sleep(5)
+            logger.info("Väntar 10 sekunder innan återanslutning för att undvika överbelastning av skrivaren...")
+            await asyncio.sleep(10)
 
     async def _process_video_track(self, track):
         """Avkodar videoframes från WebRTC-spåret och konverterar till JPEG."""
