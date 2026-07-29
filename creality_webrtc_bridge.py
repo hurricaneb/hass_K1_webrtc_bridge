@@ -89,7 +89,7 @@ log_level_map = {
 logger = logging.getLogger("creality_webrtc")
 
 def prepare_offer_sdp(sdp: str) -> str:
-    """Rensar offer SDP och tvingar fram m=video 9, Payload Type 106 & 96 samt a=setup:active för K1 Max."""
+    """Rensar offer SDP och tvingar fram giltig RFC4566-struktur med m=video 9, Payload Type 106 & 96 samt a=setup:active."""
     lines = sdp.splitlines()
     new_lines = []
     
@@ -105,12 +105,13 @@ def prepare_offer_sdp(sdp: str) -> str:
             new_lines.append("a=setup:active")
         elif line.startswith("a=msid-semantic:"):
             new_lines.append("a=msid-semantic: WMS metaRTCLiveStream")
+        elif line.startswith("t="):
+            new_lines.append(line)
+            new_lines.append("a=ice-lite")
         else:
             new_lines.append(line)
 
     sdp_out = "\r\n".join(new_lines) + "\r\n"
-    if "a=ice-lite" not in sdp_out:
-        sdp_out = "a=ice-lite\r\n" + sdp_out
     if "a=rtpmap:106" not in sdp_out:
         sdp_out += "a=rtpmap:106 H264/90000\r\na=fmtp:106 profile-level-id=42e01f;packetization-mode=1\r\n"
     if "a=rtpmap:96" not in sdp_out:
@@ -436,12 +437,21 @@ class CameraBridge:
 
 async def start_app():
     cfg = load_config()
+    log_level = cfg.get("log_level", "info").lower()
+    main_level = log_level_map.get(log_level, logging.INFO)
+
     logging.basicConfig(
-        level=log_level_map.get(cfg.get("log_level", "info").lower(), logging.INFO),
+        level=main_level,
         format="%(asctime)s [%(levelname)s] %(message)s",
         stream=sys.stdout,
         force=True,
     )
+
+    # Dämpa aiortc & aioice från att fylla loggen i onödan om inte log_level är 'trace'
+    if log_level != "trace":
+        logging.getLogger("aiortc").setLevel(logging.WARNING)
+        logging.getLogger("aioice").setLevel(logging.WARNING)
+
     logger.info("Startar Creality K1 WebRTC Camera Bridge med konfiguration:")
     logger.info("  Skrivar-IP: %s", cfg["printer_ip"])
     logger.info("  Skrivarport: %s", cfg["printer_port"])
