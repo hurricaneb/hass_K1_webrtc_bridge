@@ -10,8 +10,23 @@ import time
 from typing import Optional, Set
 import aiohttp
 from aiohttp import web
+import OpenSSL.SSL as SSL
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 from aiortc.rtcdtlstransport import RTCDtlsTransport
+
+# MONKEY-PATCH RTCDTLSTRANSPORT TILL ATT TILLÅTA DTLS 1.0 (SSL.DTLS1_VERSION) FÖR CPR_WEBRTC
+_orig_dtls_init = RTCDtlsTransport.__init__
+def _patched_dtls_init(self, transport, remote_description):
+    _orig_dtls_init(self, transport, remote_description)
+    try:
+        if hasattr(self, "_RTCDtlsTransport__ctx"):
+            ctx = getattr(self, "_RTCDtlsTransport__ctx")
+            ctx.set_min_proto_version(SSL.DTLS1_VERSION)
+            logging.getLogger(__name__).info("DTLS min protocol version satt till DTLS 1.0 (SSL.DTLS1_VERSION)")
+    except Exception as err:
+        logging.getLogger(__name__).warning("Kunde inte sätta DTLS1_VERSION: %s", err)
+
+RTCDtlsTransport.__init__ = _patched_dtls_init
 
 try:
     from aiortc.rtp import RtcpPsfbPacket
