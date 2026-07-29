@@ -153,8 +153,12 @@ def sanitize_sdp(sdp: str) -> str:
     added_rtpmap = set()
 
     for line in other_lines:
-        m = re.match(r'^a=rtpmap:(\d+)\s+H264/90000', line, re.IGNORECASE)
-        if m:
+        if line.startswith("m=video"):
+            parts = line.split(" ")
+            pts = list(dict.fromkeys(parts[3:]))
+            new_lines.append(f"{parts[0]} {parts[1]} {parts[2]} " + " ".join(pts))
+        elif re.match(r'^a=rtpmap:(\d+)\s+H264/90000', line, re.IGNORECASE):
+            m = re.match(r'^a=rtpmap:(\d+)\s+H264/90000', line, re.IGNORECASE)
             pt = m.group(1)
             if pt not in added_rtpmap:
                 added_rtpmap.add(pt)

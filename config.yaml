@@ -1,6 +1,6 @@
 name: "Creality K1 WebRTC Camera Bridge"
 slug: "creality_webrtc_bridge"
-version: "2.4.3"
+version: "2.4.4"
 description: "WebRTC camera bridge for Creality K1 / K1 Max (new firmware) to Home Assistant MJPEG stream"
 url: "https://github.com/hurricaneb/hass_K1_webrtc_bridge"
 arch:
