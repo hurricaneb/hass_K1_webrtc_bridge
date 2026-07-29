@@ -195,12 +195,21 @@ def sanitize_sdp(sdp: str) -> str:
     return sanitized
 
 async def trigger_camera_via_ws(printer_ip: str):
-    """Skickar video_start till skrivarens kontroll-WebSocket på port 9999 så videokodaren startas."""
+    """Skickar initieringskommandon till skrivaren (GET /info på port 80 samt WebSocket getToken på port 9999)."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"http://{printer_ip}/info", timeout=2.0) as resp:
+                logger.info("HTTP /info anrop mot port 80 svarade HTTP %s", resp.status)
+    except Exception as err:
+        logger.debug("HTTP /info anrop fel: %s", err)
+
     ws_url = f"ws://{printer_ip}:9999/"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.ws_connect(ws_url, timeout=3.0) as ws:
-                logger.info("Skickar video_start till skrivarens kontroll-WebSocket på port 9999...")
+                logger.info("Skickar getToken & camera init till skrivarens kontroll-WebSocket på port 9999...")
+                cmd1 = {"method": "get", "params": {"reqGcodeFile": 1, "reqGcodeList": 1, "reqMaterials": 1, "boxsInfo": 1, "boxConfig": 1, "getToken": 1}}
+                await ws.send_str(json.dumps(cmd1))
                 await ws.send_str(json.dumps({"cmd": "video_start"}))
                 await asyncio.sleep(0.5)
     except Exception as err:
