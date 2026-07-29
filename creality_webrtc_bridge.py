@@ -116,7 +116,7 @@ log_level_map = {
 logger = logging.getLogger("creality_webrtc")
 
 def prepare_offer_sdp(sdp: str) -> str:
-    """Filtrerar bort Docker-IPs och lägger till Payload Type 96 i offer SDP för H264-kodern."""
+    """Filtrerar bort Docker-IPs och lägger till Payload Type 106 & 96 i offer SDP för H264-kodern."""
     lines = sdp.splitlines()
     new_lines = []
     for line in lines:
@@ -126,14 +126,20 @@ def prepare_offer_sdp(sdp: str) -> str:
         elif line.startswith("m=video"):
             parts = line.split(" ")
             pt_list = parts[3:]
+            if "106" not in pt_list:
+                pt_list.insert(0, "106")
             if "96" not in pt_list:
-                pt_list.insert(0, "96")
+                pt_list.insert(1, "96")
             line = " ".join(parts[:3] + pt_list)
         new_lines.append(line)
 
     sdp_out = "\r\n".join(new_lines) + "\r\n"
+    if "a=rtpmap:106" not in sdp_out:
+        sdp_out += "a=rtpmap:106 H264/90000\r\na=fmtp:106 profile-level-id=42e01f;packetization-mode=1\r\n"
     if "a=rtpmap:96" not in sdp_out:
         sdp_out += "a=rtpmap:96 H264/90000\r\na=fmtp:96 profile-level-id=42e01f;packetization-mode=1\r\n"
+    if "a=rtcp-rsize" not in sdp_out:
+        sdp_out += "a=rtcp-rsize\r\na=rtcp-fb:106 transport-cc\r\na=rtcp-fb:106 nack\r\na=rtcp-fb:106 nack pli\r\n"
     return sdp_out
 
 def sanitize_sdp(sdp: str) -> str:
@@ -157,12 +163,15 @@ def sanitize_sdp(sdp: str) -> str:
 
     new_lines = []
     added_fmtp = set()
+    added_rtpmap = set()
 
     for line in other_lines:
-        new_lines.append(line)
         m = re.match(r'^a=rtpmap:(\d+)\s+H264/90000', line, re.IGNORECASE)
         if m:
             pt = m.group(1)
+            if pt not in added_rtpmap:
+                added_rtpmap.add(pt)
+                new_lines.append(line)
             if pt not in added_fmtp:
                 added_fmtp.add(pt)
                 combined = ";".join(fmtp_params.get(pt, []))
@@ -178,6 +187,8 @@ def sanitize_sdp(sdp: str) -> str:
 
                 combined = re.sub(r';+', ';', combined).strip(';')
                 new_lines.append(f"a=fmtp:{pt} {combined}")
+        else:
+            new_lines.append(line)
 
     sanitized = "\r\n".join(new_lines) + "\r\n"
     logger.info("--- SANERAD SDP ANSWER FÖR AIORTC ---\n%s", sanitized)
