@@ -217,37 +217,29 @@ class CameraBridge:
         """Initierar WebRTC handskakning med skrivaren och hanterar mottagna bildrutor."""
         while True:
             try:
-                # Trigga videokodaren via WebSocket port 9999 först
-                await trigger_camera_via_ws(self.printer_ip)
-
-                logger.info("Ansluter till Creality K1 WebRTC på %s...", self.webrtc_url)
+                self.received_frames_count = 0
                 rtc_cfg = RTCConfiguration(
                     iceServers=[RTCIceServer(urls="stun:stun.l.google.com:19302")]
                 )
                 self.pc = RTCPeerConnection(configuration=rtc_cfg)
-                self.pc.addTransceiver("video", direction="recvonly")
 
-                track_received = asyncio.Event()
+                self.pc.addTransceiver("video", direction="recvonly")
 
                 @self.pc.on("track")
                 def on_track(track):
                     logger.info("Mottog track event! Track kind: %s, ID: %s", track.kind, track.id)
                     if track.kind == "video":
                         logger.info("Mottog videotrack! Börjar avkoda videoström...")
-                        track_received.set()
                         asyncio.create_task(self._process_video_track(track))
 
-                @self.pc.on("connectionstatechange")
-                async def on_connectionstatechange():
-                    logger.info("WebRTC connectionState: %s", self.pc.connectionState)
-                    if self.pc.connectionState in ["failed", "closed", "disconnected"]:
-                        self.connected = False
-
                 @self.pc.on("iceconnectionstatechange")
-                async def on_iceconnectionstatechange():
+                def on_ice_change():
                     logger.info("WebRTC iceConnectionState: %s", self.pc.iceConnectionState)
 
-                # 1. Skapa lokal SDP offer
+                @self.pc.on("connectionstatechange")
+                def on_conn_change():
+                    logger.info("WebRTC connectionState: %s", self.pc.connectionState)
+
                 offer = await self.pc.createOffer()
                 await self.pc.setLocalDescription(offer)
 
@@ -296,6 +288,20 @@ class CameraBridge:
 
                             answer = RTCSessionDescription(sdp=sanitized_sdp, type=decoded_json["type"])
                             await self.pc.setRemoteDescription(answer)
+
+                            # Register SSRC 1 and Payload Type 106/96 in RtpRouter & _codecs
+                            for transceiver in self.pc.getTransceivers():
+                                if transceiver.receiver:
+                                    if transceiver.receiver.transport:
+                                        router = transceiver.receiver.transport._rtp_router
+                                        router.register_receiver(transceiver.receiver, ssrcs=[1], payload_types=[96, 106])
+
+                                    codecs_dict = getattr(transceiver.receiver, "_RTCRtpReceiver__codecs", {})
+                                    if 96 in codecs_dict and 106 not in codecs_dict:
+                                        codecs_dict[106] = codecs_dict[96]
+                                    elif 106 in codecs_dict and 96 not in codecs_dict:
+                                        codecs_dict[96] = codecs_dict[106]
+
                             logger.info("WebRTC-handskakning genomförd med skrivaren!")
                             self.connected = True
                         else:
