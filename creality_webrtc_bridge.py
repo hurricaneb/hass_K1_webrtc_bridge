@@ -133,17 +133,31 @@ def sanitize_sdp(sdp: str) -> str:
     """Sanerar SDP-svaret från skrivaren: slår ihop dubblerade a=fmtp och a=rtpmap rader samt tar bort dubbla PT i m=video."""
     lines = sdp.splitlines()
     new_lines = []
-    seen_lines = set()
+    seen_rtpmap = set()
+    seen_fmtp = set()
 
     for line in lines:
         if line.startswith("m=video"):
             parts = line.split(" ")
             pts = list(dict.fromkeys(parts[3:]))
             new_lines.append(f"{parts[0]} {parts[1]} {parts[2]} " + " ".join(pts))
-        elif line in seen_lines and (line.startswith("a=rtpmap:") or line.startswith("a=fmtp:")):
-            continue
+        elif line.startswith("a=rtpmap:"):
+            m = re.match(r'^a=rtpmap:(\d+)', line)
+            if m:
+                pt = m.group(1)
+                if pt in seen_rtpmap:
+                    continue
+                seen_rtpmap.add(pt)
+            new_lines.append(line)
+        elif line.startswith("a=fmtp:"):
+            m = re.match(r'^a=fmtp:(\d+)', line)
+            if m:
+                pt = m.group(1)
+                if pt in seen_fmtp:
+                    continue
+                seen_fmtp.add(pt)
+            new_lines.append(line)
         else:
-            seen_lines.add(line)
             new_lines.append(line)
 
     sanitized = "\r\n".join(new_lines) + "\r\n"
