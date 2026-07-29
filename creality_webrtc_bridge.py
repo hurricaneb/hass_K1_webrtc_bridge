@@ -24,34 +24,7 @@ from PIL import Image, ImageDraw
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
 
-# Monkey-patch RTCDtlsTransport so unencrypted RTP packets from Creality printer are passed directly to PyAV decoder
-_original_recv_next = RTCDtlsTransport._recv_next
 
-async def _patched_recv_next(self):
-    try:
-        data = await self.transport._recv()
-    except Exception:
-        return await _original_recv_next(self)
-
-    if not data:
-        return await _original_recv_next(self)
-
-    first_byte = data[0]
-    if first_byte > 127 and first_byte < 192:
-        # Raw RTP video packet! Force state connected so RTCP keyframe requests work
-        if self.state != "connected":
-            self._set_state("connected")
-        if self._rx_srtp:
-            try:
-                return self._rx_srtp.unprotect(data)
-            except Exception:
-                return data
-        return data
-
-    # Send all other packets (STUN, DTLS, etc.) to standard aiortc handler
-    return await _original_recv_next(self)
-
-RTCDtlsTransport._recv_next = _patched_recv_next
 
 def create_placeholder_frame(status_text: str = "Creality K1 Max WebRTC Bridge - Ansluten, väntar på ström...") -> bytes:
     """Skapar en mörk JPEG-bild med statustext så Home Assistant sätter kameran som Aktiv."""
@@ -116,22 +89,22 @@ log_level_map = {
 logger = logging.getLogger("creality_webrtc")
 
 def prepare_offer_sdp(sdp: str) -> str:
-    """Filtrerar bort Docker-IPs och lägger till Payload Type 106 & 96 i offer SDP för H264-kodern."""
+    """Rensar offer SDP och tvingar fram Payload Type 106 & 96 samt a=setup:active för K1 Max."""
     lines = sdp.splitlines()
     new_lines = []
+    
     for line in lines:
         if line.startswith("a=candidate:"):
-            if " 172.17." in line or " 172.18." in line or " 172.19." in line or " 172.30." in line or " fd" in line:
+            if " 172." in line or " fd" in line:
                 continue
+            new_lines.append(line)
         elif line.startswith("m=video"):
             parts = line.split(" ")
-            pt_list = parts[3:]
-            if "106" not in pt_list:
-                pt_list.insert(0, "106")
-            if "96" not in pt_list:
-                pt_list.insert(1, "96")
-            line = " ".join(parts[:3] + pt_list)
-        new_lines.append(line)
+            new_lines.append(f"{parts[0]} {parts[1]} {parts[2]} 106 96 " + " ".join(parts[3:]))
+        elif line.startswith("a=setup:"):
+            new_lines.append("a=setup:active")
+        else:
+            new_lines.append(line)
 
     sdp_out = "\r\n".join(new_lines) + "\r\n"
     if "a=rtpmap:106" not in sdp_out:
@@ -139,7 +112,9 @@ def prepare_offer_sdp(sdp: str) -> str:
     if "a=rtpmap:96" not in sdp_out:
         sdp_out += "a=rtpmap:96 H264/90000\r\na=fmtp:96 profile-level-id=42e01f;packetization-mode=1\r\n"
     if "a=rtcp-rsize" not in sdp_out:
-        sdp_out += "a=rtcp-rsize\r\na=rtcp-fb:106 transport-cc\r\na=rtcp-fb:106 nack\r\na=rtcp-fb:106 nack pli\r\n"
+        sdp_out += "a=rtcp-rsize\r\n"
+    if "a=rtcp-fb:106 transport-cc" not in sdp_out:
+        sdp_out += "a=rtcp-fb:106 transport-cc\r\na=rtcp-fb:106 nack\r\na=rtcp-fb:106 nack pli\r\n"
     return sdp_out
 
 def sanitize_sdp(sdp: str) -> str:
