@@ -89,24 +89,28 @@ log_level_map = {
 logger = logging.getLogger("creality_webrtc")
 
 def prepare_offer_sdp(sdp: str) -> str:
-    """Rensar offer SDP och tvingar fram Payload Type 106 & 96 samt a=setup:active för K1 Max."""
+    """Rensar offer SDP och tvingar fram m=video 9, Payload Type 106 & 96 samt a=setup:active för K1 Max."""
     lines = sdp.splitlines()
     new_lines = []
     
     for line in lines:
         if line.startswith("a=candidate:"):
-            if " 172." in line or " fd" in line:
+            if " 172." in line or " fd" in line or " srflx" in line:
                 continue
             new_lines.append(line)
         elif line.startswith("m=video"):
             parts = line.split(" ")
-            new_lines.append(f"{parts[0]} {parts[1]} {parts[2]} 106 96 " + " ".join(parts[3:]))
+            new_lines.append(f"{parts[0]} 9 {parts[2]} 106 96 " + " ".join(parts[3:]))
         elif line.startswith("a=setup:"):
             new_lines.append("a=setup:active")
+        elif line.startswith("a=msid-semantic:"):
+            new_lines.append("a=msid-semantic: WMS metaRTCLiveStream")
         else:
             new_lines.append(line)
 
     sdp_out = "\r\n".join(new_lines) + "\r\n"
+    if "a=ice-lite" not in sdp_out:
+        sdp_out = "a=ice-lite\r\n" + sdp_out
     if "a=rtpmap:106" not in sdp_out:
         sdp_out += "a=rtpmap:106 H264/90000\r\na=fmtp:106 profile-level-id=42e01f;packetization-mode=1\r\n"
     if "a=rtpmap:96" not in sdp_out:
